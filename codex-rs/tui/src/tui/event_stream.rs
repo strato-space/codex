@@ -17,6 +17,7 @@
 //!
 //! See https://ratatui.rs/recipes/apps/spawn-vim/ and https://www.reddit.com/r/rust/comments/1f3o33u/myterious_crossterm_input_after_running_vim for more details.
 
+use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -24,16 +25,20 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
+use std::time::Duration;
 
 use crossterm::event::Event;
 use tokio::sync::broadcast;
 use tokio::sync::watch;
+use tokio::time::Sleep;
 use tokio_stream::Stream;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::wrappers::WatchStream;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 
 use super::TuiEvent;
+
+const EVENT_SOURCE_RESTART_BACKOFF: Duration = Duration::from_millis(10);
 
 /// Result type produced by an event source.
 pub type EventResult = std::io::Result<Event>;
@@ -140,6 +145,7 @@ pub struct TuiEventStream<S: EventSource + Default + Unpin = CrosstermEventSourc
     broker: Arc<EventBroker<S>>,
     draw_stream: BroadcastStream<()>,
     resume_stream: WatchStream<()>,
+    restart_backoff: Option<Pin<Box<Sleep>>>,
     terminal_focused: Arc<AtomicBool>,
     poll_draw_first: bool,
     #[cfg(unix)]
@@ -161,6 +167,7 @@ impl<S: EventSource + Default + Unpin> TuiEventStream<S> {
             broker,
             draw_stream: BroadcastStream::new(draw_rx),
             resume_stream,
+            restart_backoff: None,
             terminal_focused,
             poll_draw_first: false,
             #[cfg(unix)]
@@ -178,8 +185,17 @@ impl<S: EventSource + Default + Unpin> TuiEventStream<S> {
     pub fn poll_crossterm_event(&mut self, cx: &mut Context<'_>) -> Poll<Option<TuiEvent>> {
         enum CrosstermPollOutcome {
             Event(Event),
-            Restart,
+            RestartAfterBackoff,
             WaitForResume,
+        }
+
+        if let Some(backoff) = self.restart_backoff.as_mut() {
+            match backoff.as_mut().poll(cx) {
+                Poll::Ready(()) => {
+                    self.restart_backoff = None;
+                }
+                Poll::Pending => return Poll::Pending,
+            }
         }
 
         // Some crossterm events map to None (e.g. FocusLost, mouse); loop so we keep polling
@@ -195,10 +211,11 @@ impl<S: EventSource + Default + Unpin> TuiEventStream<S> {
                     Some(events) => match Pin::new(events).poll_next(cx) {
                         Poll::Ready(Some(Ok(event))) => CrosstermPollOutcome::Event(event),
                         Poll::Ready(Some(Err(_))) | Poll::Ready(None) => {
-                            // Recreate the underlying event source on the next loop
-                            // iteration instead of ending the entire TUI event stream.
+                            // Schedule a delayed recreation of the underlying event source
+                            // instead of ending the entire TUI event stream or spinning in
+                            // the same poll call on a persistently broken stdin state.
                             *state = EventBrokerState::Start;
-                            CrosstermPollOutcome::Restart
+                            CrosstermPollOutcome::RestartAfterBackoff
                         }
                         Poll::Pending => CrosstermPollOutcome::WaitForResume,
                     },
@@ -212,7 +229,12 @@ impl<S: EventSource + Default + Unpin> TuiEventStream<S> {
                         return Poll::Ready(Some(mapped));
                     }
                 }
-                CrosstermPollOutcome::Restart => continue,
+                CrosstermPollOutcome::RestartAfterBackoff => {
+                    self.restart_backoff = Some(Box::pin(tokio::time::sleep(
+                        EVENT_SOURCE_RESTART_BACKOFF,
+                    )));
+                    return Poll::Pending;
+                }
                 CrosstermPollOutcome::WaitForResume => {
                     // Poll resume_stream so resume_events can wake us even while
                     // waiting on stdin or while the broker is explicitly paused.
@@ -339,6 +361,18 @@ mod tests {
             Self { broker }
         }
 
+        fn close(&self) {
+            let mut state = self
+                .broker
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(source) = state.active_event_source_mut() else {
+                return;
+            };
+            source.rx.close();
+        }
+
         fn send(&self, event: EventResult) {
             let mut state = self
                 .broker
@@ -456,8 +490,8 @@ mod tests {
         assert!(matches!(first, Some(TuiEvent::Draw)));
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn error_or_eof_restarts_stream() {
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn error_restarts_stream_after_backoff() {
         let (broker, handle, _draw_tx, draw_rx, terminal_focused) = setup();
         let mut stream = make_stream(broker, draw_rx, terminal_focused);
 
@@ -465,6 +499,8 @@ mod tests {
         tokio::task::yield_now().await;
 
         handle.send(Err(std::io::Error::other("boom")));
+        tokio::task::yield_now().await;
+        tokio::time::advance(EVENT_SOURCE_RESTART_BACKOFF + Duration::from_millis(1)).await;
         tokio::task::yield_now().await;
         handle.send(Ok(Event::Key(KeyEvent::new(
             KeyCode::Char('b'),
@@ -480,6 +516,35 @@ mod tests {
                 assert_eq!(key, KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE));
             }
             other => panic!("expected key event after restart, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn eof_restarts_stream_after_backoff() {
+        let (broker, handle, _draw_tx, draw_rx, terminal_focused) = setup();
+        let mut stream = make_stream(broker, draw_rx, terminal_focused);
+
+        let task = tokio::spawn(async move { stream.next().await });
+        tokio::task::yield_now().await;
+
+        handle.close();
+        tokio::task::yield_now().await;
+        tokio::time::advance(EVENT_SOURCE_RESTART_BACKOFF + Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+        handle.send(Ok(Event::Key(KeyEvent::new(
+            KeyCode::Char('e'),
+            KeyModifiers::NONE,
+        ))));
+
+        let event = timeout(Duration::from_millis(100), task)
+            .await
+            .expect("timed out waiting for restarted event stream after eof")
+            .expect("join failed");
+        match event {
+            Some(TuiEvent::Key(key)) => {
+                assert_eq!(key, KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+            }
+            other => panic!("expected key event after eof restart, got {other:?}"),
         }
     }
 

@@ -480,7 +480,7 @@ impl BottomPane {
         if let Some(view) = self.view_stack.last_mut() {
             let needs_redraw = view.handle_paste(pasted);
             if view.is_complete() {
-                self.view_stack.pop();
+                self.view_stack.clear();
                 self.on_active_view_complete();
             }
             if needs_redraw {
@@ -1962,7 +1962,20 @@ mod tests {
     }
 
     #[test]
-    fn handle_paste_pops_completed_view_and_reenables_composer() {
+    fn handle_paste_clears_completed_view_stack_and_reenables_composer() {
+        #[derive(Default)]
+        struct BlockingView;
+
+        impl Renderable for BlockingView {
+            fn render(&self, _area: Rect, _buf: &mut Buffer) {}
+
+            fn desired_height(&self, _width: u16) -> u16 {
+                0
+            }
+        }
+
+        impl BottomPaneView for BlockingView {}
+
         #[derive(Default)]
         struct PasteCompletesView;
 
@@ -2002,6 +2015,7 @@ mod tests {
             Some("Answer the questions to continue.".to_string()),
         );
 
+        pane.push_view(Box::new(BlockingView));
         pane.push_view(Box::new(PasteCompletesView));
         pane.handle_paste("hello".to_string());
 
