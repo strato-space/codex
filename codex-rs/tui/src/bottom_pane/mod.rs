@@ -480,6 +480,7 @@ impl BottomPane {
         if let Some(view) = self.view_stack.last_mut() {
             let needs_redraw = view.handle_paste(pasted);
             if view.is_complete() {
+                self.view_stack.pop();
                 self.on_active_view_complete();
             }
             if needs_redraw {
@@ -1958,5 +1959,55 @@ mod tests {
         ));
 
         assert_eq!(handle_calls.get(), 1);
+    }
+
+    #[test]
+    fn handle_paste_pops_completed_view_and_reenables_composer() {
+        #[derive(Default)]
+        struct PasteCompletesView;
+
+        impl Renderable for PasteCompletesView {
+            fn render(&self, _area: Rect, _buf: &mut Buffer) {}
+
+            fn desired_height(&self, _width: u16) -> u16 {
+                0
+            }
+        }
+
+        impl BottomPaneView for PasteCompletesView {
+            fn handle_paste(&mut self, _pasted: String) -> bool {
+                true
+            }
+
+            fn is_complete(&self) -> bool {
+                true
+            }
+        }
+
+        let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx_raw);
+        let mut pane = BottomPane::new(BottomPaneParams {
+            app_event_tx: tx,
+            frame_requester: FrameRequester::test_dummy(),
+            has_input_focus: true,
+            enhanced_keys_supported: false,
+            placeholder_text: "Ask Codex to do anything".to_string(),
+            disable_paste_burst: false,
+            animations_enabled: true,
+            skills: Some(Vec::new()),
+        });
+
+        pane.set_composer_input_enabled(
+            false,
+            Some("Answer the questions to continue.".to_string()),
+        );
+
+        pane.push_view(Box::new(PasteCompletesView));
+        pane.handle_paste("hello".to_string());
+
+        assert!(pane.no_modal_or_popup_active());
+        let result = pane.handle_key_event(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert_eq!(result, InputResult::None);
+        assert_eq!(pane.composer_text(), "x");
     }
 }

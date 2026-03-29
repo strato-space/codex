@@ -176,6 +176,12 @@ impl<S: EventSource + Default + Unpin> TuiEventStream<S> {
     /// a mapped event, hits `Pending`, or sees EOF/error. When the broker is paused, it drops
     /// the underlying stream and returns `Pending` to fully release stdin.
     pub fn poll_crossterm_event(&mut self, cx: &mut Context<'_>) -> Poll<Option<TuiEvent>> {
+        enum CrosstermPollOutcome {
+            Event(Event),
+            Restart,
+            WaitForResume,
+        }
+
         // Some crossterm events map to None (e.g. FocusLost, mouse); loop so we keep polling
         // until we return a mapped event, hit Pending, or see EOF/error.
         loop {
@@ -185,38 +191,37 @@ impl<S: EventSource + Default + Unpin> TuiEventStream<S> {
                     .state
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let events = match state.active_event_source_mut() {
-                    Some(events) => events,
-                    None => {
-                        drop(state);
-                        // Poll resume_stream so resume_events wakes a stream paused here
-                        match Pin::new(&mut self.resume_stream).poll_next(cx) {
-                            Poll::Ready(Some(())) => continue,
-                            Poll::Ready(None) => return Poll::Ready(None),
-                            Poll::Pending => return Poll::Pending,
+                match state.active_event_source_mut() {
+                    Some(events) => match Pin::new(events).poll_next(cx) {
+                        Poll::Ready(Some(Ok(event))) => CrosstermPollOutcome::Event(event),
+                        Poll::Ready(Some(Err(_))) | Poll::Ready(None) => {
+                            // Recreate the underlying event source on the next loop
+                            // iteration instead of ending the entire TUI event stream.
+                            *state = EventBrokerState::Start;
+                            CrosstermPollOutcome::Restart
                         }
-                    }
-                };
-                match Pin::new(events).poll_next(cx) {
-                    Poll::Ready(Some(Ok(event))) => Some(event),
-                    Poll::Ready(Some(Err(_))) | Poll::Ready(None) => {
-                        *state = EventBrokerState::Start;
-                        return Poll::Ready(None);
-                    }
-                    Poll::Pending => {
-                        drop(state);
-                        // Poll resume_stream so resume_events can wake us even while waiting on stdin
-                        match Pin::new(&mut self.resume_stream).poll_next(cx) {
-                            Poll::Ready(Some(())) => continue,
-                            Poll::Ready(None) => return Poll::Ready(None),
-                            Poll::Pending => return Poll::Pending,
-                        }
-                    }
+                        Poll::Pending => CrosstermPollOutcome::WaitForResume,
+                    },
+                    None => CrosstermPollOutcome::WaitForResume,
                 }
             };
 
-            if let Some(mapped) = poll_result.and_then(|event| self.map_crossterm_event(event)) {
-                return Poll::Ready(Some(mapped));
+            match poll_result {
+                CrosstermPollOutcome::Event(event) => {
+                    if let Some(mapped) = self.map_crossterm_event(event) {
+                        return Poll::Ready(Some(mapped));
+                    }
+                }
+                CrosstermPollOutcome::Restart => continue,
+                CrosstermPollOutcome::WaitForResume => {
+                    // Poll resume_stream so resume_events can wake us even while
+                    // waiting on stdin or while the broker is explicitly paused.
+                    match Pin::new(&mut self.resume_stream).poll_next(cx) {
+                        Poll::Ready(Some(())) => continue,
+                        Poll::Ready(None) => return Poll::Ready(None),
+                        Poll::Pending => return Poll::Pending,
+                    }
+                }
             }
         }
     }
@@ -452,14 +457,30 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn error_or_eof_ends_stream() {
+    async fn error_or_eof_restarts_stream() {
         let (broker, handle, _draw_tx, draw_rx, terminal_focused) = setup();
         let mut stream = make_stream(broker, draw_rx, terminal_focused);
 
-        handle.send(Err(std::io::Error::other("boom")));
+        let task = tokio::spawn(async move { stream.next().await });
+        tokio::task::yield_now().await;
 
-        let next = stream.next().await;
-        assert!(next.is_none());
+        handle.send(Err(std::io::Error::other("boom")));
+        tokio::task::yield_now().await;
+        handle.send(Ok(Event::Key(KeyEvent::new(
+            KeyCode::Char('b'),
+            KeyModifiers::NONE,
+        ))));
+
+        let event = timeout(Duration::from_millis(100), task)
+            .await
+            .expect("timed out waiting for restarted event stream")
+            .expect("join failed");
+        match event {
+            Some(TuiEvent::Key(key)) => {
+                assert_eq!(key, KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE));
+            }
+            other => panic!("expected key event after restart, got {other:?}"),
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]
