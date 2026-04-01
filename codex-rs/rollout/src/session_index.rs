@@ -41,7 +41,15 @@ pub async fn append_thread_name(
         thread_name: name.to_string(),
         updated_at,
     };
-    append_session_index_entry(codex_home, &entry).await
+    append_session_index_entry(codex_home, &entry).await?;
+    crate::state_db::set_thread_title(
+        codex_home,
+        thread_id,
+        name,
+        "session_index.append_thread_name",
+    )
+    .await;
+    Ok(())
 }
 
 /// Append a raw session index entry to `session_index.jsonl`.

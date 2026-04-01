@@ -116,6 +116,38 @@ async fn require_backfill_complete(
     }
 }
 
+/// Best-effort sync for a thread title when `session_index.jsonl` is updated.
+///
+/// This intentionally bypasses backfill gating because a rename should keep the
+/// SQLite row in sync even while background backfill is still settling.
+pub async fn set_thread_title(
+    codex_home: &Path,
+    thread_id: ThreadId,
+    title: &str,
+    stage: &str,
+) {
+    let db_path = codex_state::state_db_path(codex_home);
+    if !tokio::fs::try_exists(&db_path).await.unwrap_or(false) {
+        return;
+    }
+
+    let runtime = match codex_state::StateRuntime::init(codex_home.to_path_buf(), String::new())
+        .await
+    {
+        Ok(runtime) => runtime,
+        Err(err) => {
+            warn!(
+                "state db init failed during {stage} while syncing thread title for {thread_id}: {err}"
+            );
+            return;
+        }
+    };
+
+    if let Err(err) = runtime.set_thread_title(thread_id, title).await {
+        warn!("state db set_thread_title failed during {stage} for {thread_id}: {err}");
+    }
+}
+
 fn cursor_to_anchor(cursor: Option<&Cursor>) -> Option<codex_state::Anchor> {
     let cursor = cursor?;
     let value = serde_json::to_value(cursor).ok()?;

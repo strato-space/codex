@@ -5,6 +5,7 @@ use pretty_assertions::assert_eq;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use tempfile::TempDir;
+
 fn write_index(path: &Path, lines: &[SessionIndexEntry]) -> std::io::Result<()> {
     let mut out = String::new();
     for entry in lines {
@@ -165,5 +166,63 @@ fn scan_index_finds_latest_match_among_mixed_entries() -> std::io::Result<()> {
 
     let found_other_by_id = scan_index_from_end_by_id(&path, &id_other)?;
     assert_eq!(found_other_by_id, Some(expected_other));
+    Ok(())
+}
+
+#[tokio::test]
+async fn append_thread_name_updates_state_db_title_when_present() -> std::io::Result<()> {
+    use chrono::DateTime;
+    use chrono::Utc;
+    use codex_protocol::protocol::SessionSource;
+
+    let temp = TempDir::new()?;
+    let runtime =
+        codex_state::StateRuntime::init(temp.path().to_path_buf(), "test-provider".into())
+            .await
+            .map_err(std::io::Error::other)?;
+    runtime
+        .mark_backfill_complete(None)
+        .await
+        .map_err(std::io::Error::other)?;
+
+    let thread_id = ThreadId::new();
+    let rollout_path = temp
+        .path()
+        .join("sessions/2026/02/11")
+        .join(format!("rollout-2026-02-11T09-46-37-{thread_id}.jsonl"));
+    std::fs::create_dir_all(rollout_path.parent().expect("rollout parent"))?;
+    std::fs::write(&rollout_path, "")?;
+
+    let created_at = DateTime::parse_from_rfc3339("2026-02-11T09:46:37Z")
+        .expect("timestamp should parse")
+        .with_timezone(&Utc);
+    let mut builder = codex_state::ThreadMetadataBuilder::new(
+        thread_id,
+        rollout_path,
+        created_at,
+        SessionSource::Cli,
+    );
+    builder.cwd = temp.path().join("project");
+    std::fs::create_dir_all(&builder.cwd)?;
+
+    let mut metadata = builder.build("test-provider");
+    metadata.title = "server vm".to_string();
+    runtime
+        .upsert_thread(&metadata)
+        .await
+        .map_err(std::io::Error::other)?;
+
+    append_thread_name(temp.path(), thread_id, "Provision server VM").await?;
+
+    let updated = runtime
+        .get_thread(thread_id)
+        .await
+        .map_err(std::io::Error::other)?
+        .expect("thread should still exist");
+    assert_eq!(updated.title, "Provision server VM");
+    assert_eq!(
+        find_thread_name_by_id(temp.path(), &thread_id).await?,
+        Some("Provision server VM".to_string())
+    );
     Ok(())
 }

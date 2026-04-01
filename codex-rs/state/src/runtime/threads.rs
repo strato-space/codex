@@ -534,6 +534,19 @@ ON CONFLICT(id) DO NOTHING
         Ok(result.rows_affected() > 0)
     }
 
+    pub async fn set_thread_title(
+        &self,
+        thread_id: ThreadId,
+        title: &str,
+    ) -> anyhow::Result<bool> {
+        let result = sqlx::query("UPDATE threads SET title = ? WHERE id = ?")
+            .bind(title)
+            .bind(thread_id.to_string())
+            .execute(self.pool.as_ref())
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     pub async fn update_thread_git_info(
         &self,
         thread_id: ThreadId,
