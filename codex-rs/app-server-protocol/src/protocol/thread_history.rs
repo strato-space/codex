@@ -640,7 +640,9 @@ impl ThreadHistoryBuilder {
         let (receiver_thread_ids, agents_states) = match &payload.new_thread_id {
             Some(id) => {
                 let receiver_id = id.to_string();
-                let received_status = CollabAgentState::from(payload.status.clone());
+                let mut received_status = CollabAgentState::from(payload.status.clone());
+                received_status.agent_nickname = payload.new_agent_nickname.clone();
+                received_status.agent_role = payload.new_agent_role.clone();
                 (
                     vec![receiver_id.clone()],
                     [(receiver_id, received_status)].into_iter().collect(),
@@ -2999,6 +3001,8 @@ mod tests {
                     CollabAgentState {
                         status: crate::protocol::v2::CollabAgentStatus::Completed,
                         message: None,
+                        agent_nickname: None,
+                        agent_role: None,
                     },
                 )]
                 .into_iter()
@@ -3059,6 +3063,8 @@ mod tests {
                     CollabAgentState {
                         status: crate::protocol::v2::CollabAgentStatus::Running,
                         message: None,
+                        agent_nickname: Some("Scout".into()),
+                        agent_role: Some("explorer".into()),
                     },
                 )]
                 .into_iter()
@@ -3131,6 +3137,8 @@ mod tests {
                     CollabAgentState {
                         status: crate::protocol::v2::CollabAgentStatus::Interrupted,
                         message: None,
+                        agent_nickname: None,
+                        agent_role: None,
                     },
                 )]
                 .into_iter()

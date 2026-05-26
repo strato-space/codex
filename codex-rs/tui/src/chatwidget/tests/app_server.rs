@@ -238,6 +238,8 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
                     AppServerCollabAgentState {
                         status: AppServerCollabAgentStatus::PendingInit,
                         message: None,
+                        agent_nickname: None,
+                        agent_role: None,
                     },
                 )]),
             },
@@ -637,6 +639,8 @@ async fn live_app_server_collab_wait_items_render_history() {
                         AppServerCollabAgentState {
                             status: AppServerCollabAgentStatus::Completed,
                             message: Some("Done".to_string()),
+                            agent_nickname: None,
+                            agent_role: None,
                         },
                     ),
                     (
@@ -644,6 +648,8 @@ async fn live_app_server_collab_wait_items_render_history() {
                         AppServerCollabAgentState {
                             status: AppServerCollabAgentStatus::Running,
                             message: None,
+                            agent_nickname: None,
+                            agent_role: None,
                         },
                     ),
                 ]),
@@ -707,6 +713,8 @@ async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effo
                     AppServerCollabAgentState {
                         status: AppServerCollabAgentStatus::PendingInit,
                         message: None,
+                        agent_nickname: None,
+                        agent_role: None,
                     },
                 )]),
             },

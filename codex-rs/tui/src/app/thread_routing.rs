@@ -912,12 +912,27 @@ impl App {
                 continue;
             };
 
-            if self.agent_navigation.get(&thread_id).is_some() {
+            let (agent_nickname, agent_role) =
+                collab_receiver_agent_metadata(notification, receiver_thread_id);
+            if let Some(existing) = self.agent_navigation.get(&thread_id) {
+                if agent_nickname.is_none() && agent_role.is_none() {
+                    continue;
+                }
+                let upgraded_nickname = agent_nickname.or_else(|| existing.agent_nickname.clone());
+                let upgraded_role = agent_role.or_else(|| existing.agent_role.clone());
+                self.upsert_agent_picker_thread(
+                    thread_id,
+                    upgraded_nickname,
+                    upgraded_role,
+                    existing.is_closed,
+                );
                 continue;
             }
 
             self.upsert_agent_picker_thread(
-                thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
+                thread_id,
+                agent_nickname,
+                agent_role,
                 /*is_closed*/ false,
             );
         }
@@ -1414,9 +1429,11 @@ impl App {
 
     pub(super) fn handle_thread_event_replay(&mut self, event: ThreadBufferedEvent) {
         match event {
-            ThreadBufferedEvent::Notification(notification) => self
-                .chat_widget
-                .handle_server_notification(notification, Some(ReplayKind::ThreadSnapshot)),
+            ThreadBufferedEvent::Notification(notification) => {
+                self.cache_collab_receiver_threads_for_notification(&notification);
+                self.chat_widget
+                    .handle_server_notification(notification, Some(ReplayKind::ThreadSnapshot));
+            }
             ThreadBufferedEvent::Request(request) => self
                 .chat_widget
                 .handle_server_request(request, Some(ReplayKind::ThreadSnapshot)),

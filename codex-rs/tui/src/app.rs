@@ -285,6 +285,23 @@ fn collab_receiver_is_not_found(
     }
 }
 
+fn collab_receiver_agent_metadata(
+    notification: &ServerNotification,
+    receiver_thread_id: &str,
+) -> (Option<String>, Option<String>) {
+    match notification {
+        ServerNotification::ItemStarted(notification)
+        | ServerNotification::ItemCompleted(notification) => match &notification.item {
+            ThreadItem::CollabAgentToolCall { agents_states, .. } => agents_states
+                .get(receiver_thread_id)
+                .map(|state| (state.agent_nickname.clone(), state.agent_role.clone()))
+                .unwrap_or_default(),
+            _ => (None, None),
+        },
+        _ => (None, None),
+    }
+}
+
 fn default_exec_approval_decisions(
     network_approval_context: Option<&codex_app_server_protocol::NetworkApprovalContext>,
     proposed_execpolicy_amendment: Option<&codex_app_server_protocol::ExecPolicyAmendment>,
