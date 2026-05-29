@@ -289,15 +289,16 @@ fn collab_receiver_agent_metadata(
     notification: &ServerNotification,
     receiver_thread_id: &str,
 ) -> (Option<String>, Option<String>) {
-    match notification {
-        ServerNotification::ItemStarted(notification)
-        | ServerNotification::ItemCompleted(notification) => match &notification.item {
-            ThreadItem::CollabAgentToolCall { agents_states, .. } => agents_states
-                .get(receiver_thread_id)
-                .map(|state| (state.agent_nickname.clone(), state.agent_role.clone()))
-                .unwrap_or_default(),
-            _ => (None, None),
-        },
+    let item = match notification {
+        ServerNotification::ItemStarted(notification) => &notification.item,
+        ServerNotification::ItemCompleted(notification) => &notification.item,
+        _ => return (None, None),
+    };
+    match item {
+        ThreadItem::CollabAgentToolCall { agents_states, .. } => agents_states
+            .get(receiver_thread_id)
+            .map(|state| (state.agent_nickname.clone(), state.agent_role.clone()))
+            .unwrap_or_default(),
         _ => (None, None),
     }
 }

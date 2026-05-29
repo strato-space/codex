@@ -3062,6 +3062,20 @@
     },
     "CollabAgentState": {
       "properties": {
+        "agentNickname": {
+          "description": "Optional nickname assigned to an AgentControl-spawned sub-agent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "agentRole": {
+          "description": "Optional role (agent_role) assigned to an AgentControl-spawned sub-agent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "message": {
           "type": [
             "string",
